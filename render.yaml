@@ -1,0 +1,14 @@
+# Render blueprint — auto-deploys when you push to GitHub.
+# Place this file at the root of your repo, then in Render: New + → Blueprint → pick the repo.
+
+services:
+  - type: web
+    name: squad-sheets
+    runtime: docker
+    plan: free          # change to "starter" ($7/mo) to avoid cold starts
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true    # redeploy on every push to main
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
