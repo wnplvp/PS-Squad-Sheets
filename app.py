@@ -57,24 +57,69 @@ def escape_latex(text):
     return text
 
 
+def _strip_tags(s):
+    """Strip HTML tags and collapse whitespace."""
+    s = re.sub(r'<[^>]+>', '', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
 def parse_html(content):
-    """Return {squad_num: [shooter_string, ...]} skipping Empty slots."""
-    squads = {}
+    """Return a list of (label, [shooter_string, ...]) tuples in document order.
+
+    Strategy for the label, in priority order:
+      1. A <strong>Squad N</strong> marker → use "Squad N".
+      2. Any other <strong>...</strong> text in the cell → use that verbatim
+         (covers things like "Unsquadded", "RO Squad", custom names, etc.).
+      3. The first non-empty line of text in the cell → use that.
+      4. Fallback to "Squad ?".
+
+    Cells with zero numbered shooters are skipped entirely.
+    """
+    results = []
+    fallback_idx = 0
     for td_match in re.finditer(r'<td[^>]*>(.*?)</td>', content, re.DOTALL):
         td = td_match.group(1)
-        sq = re.search(r'<strong>\s*Squad\s+(\d+)\s*</strong>', td)
-        if not sq:
-            continue
-        squad_num = int(sq.group(1))
+
         shooters = [
             m.group(1).strip()
             for m in re.finditer(r'\d+\.\s+(.+\))', td)
         ]
-        squads[squad_num] = shooters
-    return squads
+        if not shooters:
+            continue
+
+        # 1. Standard "Squad N" header
+        sq = re.search(r'<strong>\s*Squad\s+(\d+)\s*</strong>', td)
+        if sq:
+            label = f'Squad {sq.group(1)}'
+        else:
+            # 2. Any other <strong>...</strong> text
+            alt = re.search(r'<strong>(.*?)</strong>', td, re.DOTALL)
+            label = _strip_tags(alt.group(1)) if alt else ''
+            # 3. First non-empty line of plain text in the cell.
+            # Split on <br>/block tags AND real newlines so the label doesn't
+            # swallow the shooter rows that follow it.
+            if not label:
+                line_split = re.split(
+                    r'<br\s*/?>|</?p>|</?div>|\r?\n',
+                    td, flags=re.IGNORECASE,
+                )
+                for chunk in line_split:
+                    chunk = _strip_tags(chunk)
+                    # Skip lines that are just shooter entries (start with "N. ")
+                    if chunk and not re.match(r'^\d+\.\s', chunk):
+                        label = chunk
+                        break
+            # 4. Last-resort placeholder
+            if not label:
+                fallback_idx += 1
+                label = f'Squad ? ({fallback_idx})'
+
+        results.append((label, shooters))
+    return results
 
 
-def make_page(league_esc, squad_num, shooters, has_logo):
+def make_page(league_esc, squad_label, shooters, has_logo):
     """Build the LaTeX source for one squad page."""
     L = []
 
@@ -96,12 +141,13 @@ def make_page(league_esc, squad_num, shooters, has_logo):
         L.append('{\\Large\\textbf{' + league_esc + '}}')
 
     # ── Squad title ───────────────────────────────────────────────────────────
+    label_esc = escape_latex(squad_label)
     L += [
         '',
         r'\vspace{0.6em}',
         '',
         r'\begin{center}',
-        '  {\\fontsize{28}{32}\\selectfont\\textit{Squad ' + str(squad_num) + '}}',
+        '  {\\fontsize{28}{32}\\selectfont\\textit{' + label_esc + '}}',
         r'\end{center}',
         '',
         r'\vspace{0.2em}',
@@ -137,10 +183,11 @@ def make_page(league_esc, squad_num, shooters, has_logo):
 
 
 def generate_latex(league_name, squads, has_logo):
+    """squads is a list of (label, shooters) tuples in document order."""
     league_esc = escape_latex(league_name)
     pages = [
-        make_page(league_esc, sq, squads[sq], has_logo)
-        for sq in sorted(squads)
+        make_page(league_esc, label, shooters, has_logo)
+        for label, shooters in squads
     ]
     return PREAMBLE + '\n\\newpage\n'.join(pages) + POSTAMBLE
 
@@ -191,8 +238,8 @@ if submitted:
 
                 # Show parsed summary
                 with st.expander('Parsed squads', expanded=True):
-                    for sq in sorted(squads):
-                        st.write(f'**Squad {sq}:** {len(squads[sq])} shooter(s)')
+                    for label, shooters in squads:
+                        st.write(f'**{label}:** {len(shooters)} shooter(s)')
 
                 # Build everything in a temp dir so concurrent users don't collide
                 with tempfile.TemporaryDirectory() as work_dir:
